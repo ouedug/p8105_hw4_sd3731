@@ -1,0 +1,29 @@
+---
+title: "p8105_hw6_sd3731"
+author: "Susie Dong"
+date: "2023-12-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+knitr::opts_chunk$set(
+	warning = FALSE,
+	message = FALSE,
+	fig.width = 8, 
+	fig.height = 6)
+
+theme_set(theme_minimal())
+```
+
+
+
+
+
+
