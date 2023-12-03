@@ -24,73 +24,72 @@ theme_set(theme_minimal())
 
 ```{r homicide_data cleaning}
 omit_location = c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")
+omit_race = c("White", "Black")
 
-hom_df <-
-  read_csv("data/homicide-data.csv")|> 
-  mutate(
-    city_state = str_c(city, ", ", state),
-    resolved = as.numeric(disposition == "Closed by arrest")
-  )|> 
-  filter(city_state != omit_location & 
-           victim_race != "Unknown")|> 
-  filter(victim_race =="Black" | victim_race == "White") |> 
-  mutate(victim_age = as.numeric(victim_age))|>
-  drop_na()|>
+homicide = read_csv("data/homicide-data.csv")
+homicide = homicide |>
+  mutate(city_state = str_c(city, state, sep = ", "),
+         resolved = as.numeric(disposition == "Closed by arrest"),
+         victim_age = as.numeric(victim_age)) |>
+  filter(!city_state %in% omit_location & 
+         victim_race %in% omit_race &
+         victim_sex != "Unknown") |>
+  drop_na(victim_age) |>
   select(resolved, victim_age, victim_race, victim_sex, city_state)
 
-hom_df
 ```
 
 
 ```{r fit glm}
-fit_mod =
-  hom_df |> 
-  filter(city_state == "Baltimore, MD") |> 
-  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
-
-fit_mod |> 
-  broom::tidy(conf.int = T) |> 
+logit_model = homicide |> 
+  filter(city_state == "Baltimore, MD") |>
+  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = "binomial")
+broom::tidy(logit_model, conf.int = T) |>
   mutate(OR = exp(estimate),
-         OR_conf_high = exp(conf.low),
-         OR_conf_low = exp(conf.high)) |>
-  filter(term == "victim_sexMale") |> 
-  select(term, OR, OR_conf_low, OR_conf_high) |>
+         OR.conf.low = exp(conf.low),
+         OR.conf.high = exp(conf.high)) |>
+  filter(str_detect(term, "sex")) |>
+  select(term, OR, OR.conf.low, OR.conf.high) |>
   knitr::kable(digits = 3)
   
 ```
 
 
 ```{r glm for each city}
-res_df <-
-  hom_df |>
-  nest(data = c(resolved, victim_sex), .by = city_state) |> 
-  mutate(
-    models = map(data, \(df) glm(resolved ~ victim_sex, data = df, family = binomial())),
-    results = map(models, broom::tidy)
-  ) |> 
-  select(-models) |> 
-  unnest(results) |> 
-  mutate(OR = exp(estimate),
-         OR_conf_high = exp(conf.low),
-         OR_conf_low = exp(conf.high)) |>
-  filter(term == "victim_sexMale") |> 
-   select(term, OR, OR_conf_low, OR_conf_high) 
+tidy_stats = function(city, df){
+  df |> 
+    filter(city_state == city) |>
+    glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = "binomial") |>
+    broom::tidy(conf.int = T) |>
+    mutate(OR = exp(estimate),
+           OR.conf.low = exp(conf.low),
+           OR.conf.high = exp(conf.high)) |>
+    filter(str_detect(term, "sex")) |>
+    select(term, OR, OR.conf.low, OR.conf.high)
+}
 
-res_df |>
-  slice(1:5) |> 
+cities = homicide |> pull(city_state) |> unique()
+test_on_city = tibble(
+  city = cities,
+  hypo = map(cities, tidy_stats, df = homicide)
+) |> unnest(hypo) |>
+  select(-term)
+test_on_city |>
   knitr::kable(digits = 3)
+
 ```
 
 
 ```{r plot}
-res_df |> 
-  mutate(city_state = fct_reorder(city_state, OR)) |> 
-  ggplot(aes(x = city_state, y = OR)) + 
-  geom_point() + 
-  geom_errorbar(aes(ymin = OR_CI_lower, ymax = OR_CI_upper)) +
-  labs(x = "city state", y = "OR", title = "OR of sex") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
-  theme(plot.title = element_text(hjust = 0.5))
+test_on_city |>
+  mutate(city = fct_reorder(city, OR)) |>
+  ggplot(aes(x = city, y = OR, color = city)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = OR.conf.low, ymax = OR.conf.high)) +
+  theme_bw() +
+  labs(x = "city", y = "OR", title = "OR of sex") +
+  theme(plot.title = element_text(hjust = 0.5), axis.title.x=element_blank(),
+        axis.text.x=element_blank(), axis.ticks.x=element_blank())
 
 ```
 
