@@ -61,39 +61,37 @@ fit_mod |>
 
 
 ```{r glm for each city}
-tidy_stats = function(city, df){
-  df |> 
-    filter(city_state == city) |> 
-  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
-fit_mod |> 
-  broom::tidy(conf.int = T) |> 
+res_df <-
+  hom_df |>
+  nest(data = c(resolved, victim_sex), .by = city_state) |> 
+  mutate(
+    models = map(data, \(df) glm(resolved ~ victim_sex, data = df, family = binomial())),
+    results = map(models, broom::tidy)
+  ) |> 
+  select(-models) |> 
+  unnest(results) |> 
   mutate(OR = exp(estimate),
          OR_conf_high = exp(conf.low),
          OR_conf_low = exp(conf.high)) |>
   filter(term == "victim_sexMale") |> 
-  select(term, OR, OR_conf_low, OR_conf_high)
-}
-  
-cities = homicide |> pull(city_state) |> unique()
-test_city = tibble(
-  city = cities,
-  hypo = map(cities, tidy_stats, df = hom_df)
-) |> unnest(hypo) |>
-  select(-term)
-test_city |>
+   select(term, OR, OR_conf_low, OR_conf_high) 
+
+res_df |>
+  slice(1:5) |> 
   knitr::kable(digits = 3)
 ```
 
 
 ```{r plot}
-test_city |> 
-  mutate(city = fct_reorder(city, OR)) |>
-  ggplot(aes(x = city, y = OR, color = city)) +
+res_df |> 
+  mutate(city_state = fct_reorder(city_state, OR)) |> 
+  ggplot(aes(x = city_state, y = OR)) + 
   geom_point() + 
-  geom_errorbar(aes(ymin = OR_conf_low, ymax = OR_conf_high)) + 
+  geom_errorbar(aes(ymin = OR_CI_lower, ymax = OR_CI_upper)) +
   labs(x = "city state", y = "OR", title = "OR of sex") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1))+
   theme(plot.title = element_text(hjust = 0.5))
+
 ```
 
 
@@ -172,7 +170,86 @@ c(LB_b, UB_b)|>
 The distribution of $log(\hat{\beta_1} * \hat{\beta_2})$ exhibits a pronounced left-skew, stretching from -12 to -4, and predominantly centers around -5.5. The distribution's 2.5% and 97.5% quantiles are `r LB_b |> round(3)` and `r UB_b |> round(3)`, respectively, defining a 95% confidence interval represented as (`r LB_b |> round(3)`, `r UB_b |> round(3)`).
 
 
+## Problem 3
 
+```{r data import}
+bw_df <-
+  read_csv("data/birthweight.csv", na = c("", "."))
+```
+
+
+```{r data cleaning}
+bw_df_clean <-
+  bw_df |> 
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    mrace = as.factor(mrace)
+  ) |> 
+  select(bwt, everything())
+```
+
+
+```{r fit the model}
+hypo_model = lm(bwt ~ bhead + blength + delwt + gaweeks + malform + smoken , data = bw_df_clean)
+summary(hypo_model) |> broom::tidy()
+# because malform has p-value > 0.05, we remove it from the model
+my_model = lm(bwt ~ bhead + blength + delwt + gaweeks + smoken , data = bw_df_clean)
+summary(my_model) |> broom::tidy()
+```
+
+Comments:
+Initially, I formulated a primary model to investigate factors affecting children's birth weights, incorporating six predictors: `bhead`, `blength`, `delwt`, `gaweeks`, `malform`, and `smoken`. Upon conducting backward elimination, I found that the `malform` variable had the highest p-value of 0.61, exceeding the alpha threshold of 0.05. Consequently, I removed `malform` and refitted the model with the remaining five predictors. In this revised model, all coefficients exhibited p-values below 0.05. Therefore, the final model retained `bhead`, `blength`, `delwt`, `gaweeks`, and `smoken` as significant predictors.
+
+
+```{r residuals - fitted values}
+bw_df_clean |> 
+  add_predictions(my_model) |> 
+  add_residuals(my_model) |> 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  labs(title = "Model residuals against fitted values")
+```
+
+```{r cross validation}
+# cv
+model_1 = lm(bwt ~ blength + gaweeks, data = bw_df_clean)
+model_2 = lm(bwt ~ bhead + blength + babysex + 
+               bhead * blength + bhead * babysex + blength * babysex, data = bw_df_clean)
+cv_df <-
+  crossv_mc(bw_df_clean, 100) 
+
+cv_df <-  
+  cv_df |> 
+  mutate(
+    my_model  = map(train, \(df) lm(bwt ~ bhead + blength + delwt + gaweeks + smoken, 
+                                    data = df)),
+    model_1  = map(train, \(df) lm(bwt ~ blength + gaweeks, data = df)),
+    model_2  = map(train, \(df) lm(bwt ~ bhead + blength + babysex + 
+               bhead * blength + bhead * babysex + blength * babysex, data = df))) |> 
+  mutate(
+    rmse_my_model = map2_dbl(my_model, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_model_1 = map2_dbl(model_1, test, \(mod, df) rmse(model = mod, data = df)),
+    rmse_model_2 = map2_dbl(model_2, test, \(mod, df) rmse(model = mod, data = df)))
+```
+
+
+```{r violin plot}
+cv_df |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") |> 
+  mutate(model = fct_inorder(model)) |> 
+  ggplot(aes(x = model, y = rmse, fill = model)) + geom_violin()
+```
+
+Comments:
+Based on the violin plot, my_model exhibits the lowest rmse value, while model_2 has a rmse that is marginally higher than that of my_model. In contrast, Model_1 displays a significantly higher rmse in comparison to the other models, suggesting that its predictions might be less precise than those made by the other two models.
 
 
 
