@@ -22,6 +22,73 @@ knitr::opts_chunk$set(
 theme_set(theme_minimal())
 ```
 
+## Problem 1
+
+```{r homicide data cleaning}
+homicide_df <-
+  read_csv("data/homicide-data.csv") |> 
+  mutate(
+    city_state = str_c(city, ", ", state),
+    resolved = as.numeric(disposition == "Closed by arrest")
+  ) |> 
+  filter(city_state != "Tulsa, AL" & victim_race != "Unknown") |> 
+  filter(victim_race =="Black" | victim_race == "White") |> 
+  mutate(victim_age = as.numeric(victim_age)) |> 
+  drop_na()
+```
+
+```{r fit glm}
+# fit glm
+fit_logistic =
+  homicide_df |> 
+  filter(city_state == "Baltimore, MD") |> 
+  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
+
+fit_logistic |> 
+  broom::tidy() |> 
+  mutate(OR = exp(estimate),
+         OR_CI_upper = exp(estimate + 1.96 * std.error),
+         OR_CI_lower = exp(estimate - 1.96 * std.error)) |>
+  filter(term == "victim_sexMale") |> 
+  select(OR, OR_CI_lower, OR_CI_upper) |>
+  knitr::kable(digits = 3)
+```
+
+```{r OR for each city}
+# loop over each city
+results_df <-
+  homicide_df |>
+  nest(data = c(resolved, victim_sex), .by = city_state) |> 
+  mutate(
+    models = map(data, \(df) glm(resolved ~ victim_sex, data = df, family = binomial())),
+    results = map(models, broom::tidy)
+  ) |> 
+  select(-models) |> 
+  unnest(results) |> 
+  mutate(OR = exp(estimate),
+         OR_CI_upper = exp(estimate + 1.96 * std.error),
+         OR_CI_lower = exp(estimate - 1.96 * std.error)) |> 
+  filter(term == "victim_sexMale") |> 
+  select(city_state, OR, OR_CI_lower, OR_CI_upper)
+
+results_df |>
+  slice(1:5) |> 
+  knitr::kable(digits = 3)
+  
+```
+
+```{r plot for OR and CI for each city}
+#plots
+results_df |> 
+  mutate(city_state = fct_reorder(city_state, OR)) |> 
+  ggplot(aes(x = city_state, y = OR)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = OR_CI_lower, ymax = OR_CI_upper)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+From the plot, most cities have odds ratios that are smaller than 1, which suggests that crimes with male victims have smaller odds of resolution compared to crimes with female victims after adjusting for victim age and race. However, Albuquerque, NM has a much higher OR compare to the rest of the cities, which implies that crimes with female victims have smaller odds of resolution.
 
 
 
