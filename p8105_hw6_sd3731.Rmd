@@ -5,12 +5,9 @@ date: "2023-12-02"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 ```{r, include=FALSE}
 library(tidyverse)
+library(readxl)
 library(modelr)
 library(mgcv)
 knitr::opts_chunk$set(
@@ -22,73 +19,161 @@ knitr::opts_chunk$set(
 theme_set(theme_minimal())
 ```
 
+
 ## Problem 1
 
-```{r homicide data cleaning}
-homicide_df <-
-  read_csv("data/homicide-data.csv") |> 
+```{r homicide_data cleaning}
+omit_location = c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")
+
+hom_df <-
+  read_csv("data/homicide-data.csv")|> 
   mutate(
     city_state = str_c(city, ", ", state),
     resolved = as.numeric(disposition == "Closed by arrest")
-  ) |> 
-  filter(city_state != "Tulsa, AL" & victim_race != "Unknown") |> 
+  )|> 
+  filter(city_state != omit_location & 
+           victim_race != "Unknown")|> 
   filter(victim_race =="Black" | victim_race == "White") |> 
-  mutate(victim_age = as.numeric(victim_age)) |> 
-  drop_na()
+  mutate(victim_age = as.numeric(victim_age))|>
+  drop_na()|>
+  select(resolved, victim_age, victim_race, victim_sex, city_state)
+
+hom_df
 ```
 
+
 ```{r fit glm}
-# fit glm
-fit_logistic =
-  homicide_df |> 
+fit_mod =
+  hom_df |> 
   filter(city_state == "Baltimore, MD") |> 
   glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
 
-fit_logistic |> 
-  broom::tidy() |> 
+fit_mod |> 
+  broom::tidy(conf.int = T) |> 
   mutate(OR = exp(estimate),
-         OR_CI_upper = exp(estimate + 1.96 * std.error),
-         OR_CI_lower = exp(estimate - 1.96 * std.error)) |>
+         OR_conf_high = exp(conf.low),
+         OR_conf_low = exp(conf.high)) |>
   filter(term == "victim_sexMale") |> 
-  select(OR, OR_CI_lower, OR_CI_upper) |>
-  knitr::kable(digits = 3)
-```
-
-```{r OR for each city}
-# loop over each city
-results_df <-
-  homicide_df |>
-  nest(data = c(resolved, victim_sex), .by = city_state) |> 
-  mutate(
-    models = map(data, \(df) glm(resolved ~ victim_sex, data = df, family = binomial())),
-    results = map(models, broom::tidy)
-  ) |> 
-  select(-models) |> 
-  unnest(results) |> 
-  mutate(OR = exp(estimate),
-         OR_CI_upper = exp(estimate + 1.96 * std.error),
-         OR_CI_lower = exp(estimate - 1.96 * std.error)) |> 
-  filter(term == "victim_sexMale") |> 
-  select(city_state, OR, OR_CI_lower, OR_CI_upper)
-
-results_df |>
-  slice(1:5) |> 
+  select(term, OR, OR_conf_low, OR_conf_high) |>
   knitr::kable(digits = 3)
   
 ```
 
-```{r plot for OR and CI for each city}
-#plots
-results_df |> 
-  mutate(city_state = fct_reorder(city_state, OR)) |> 
-  ggplot(aes(x = city_state, y = OR)) + 
-  geom_point() + 
-  geom_errorbar(aes(ymin = OR_CI_lower, ymax = OR_CI_upper)) + 
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```{r glm for each city}
+tidy_stats = function(city, df){
+  df |> 
+    filter(city_state == city) |> 
+  glm(resolved ~ victim_age + victim_sex + victim_race, data = _, family = binomial())
+fit_mod |> 
+  broom::tidy(conf.int = T) |> 
+  mutate(OR = exp(estimate),
+         OR_conf_high = exp(conf.low),
+         OR_conf_low = exp(conf.high)) |>
+  filter(term == "victim_sexMale") |> 
+  select(term, OR, OR_conf_low, OR_conf_high)
+}
+  
+cities = homicide |> pull(city_state) |> unique()
+test_city = tibble(
+  city = cities,
+  hypo = map(cities, tidy_stats, df = hom_df)
+) |> unnest(hypo) |>
+  select(-term)
+test_city |>
+  knitr::kable(digits = 3)
 ```
 
 
-From the plot, most cities have odds ratios that are smaller than 1, which suggests that crimes with male victims have smaller odds of resolution compared to crimes with female victims after adjusting for victim age and race. However, Albuquerque, NM has a much higher OR compare to the rest of the cities, which implies that crimes with female victims have smaller odds of resolution.
+```{r plot}
+test_city |> 
+  mutate(city = fct_reorder(city, OR)) |>
+  ggplot(aes(x = city, y = OR, color = city)) +
+  geom_point() + 
+  geom_errorbar(aes(ymin = OR_conf_low, ymax = OR_conf_high)) + 
+  labs(x = "city state", y = "OR", title = "OR of sex") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+Summary:
+* The majority of cities show odds ratios (OR) less than 1, indicating that, after adjusting for victim age and race, crimes involving male victims are less likely to be resolved compared to those with female victims.
+* Albuquerque, NM stands out with a notably higher OR, suggesting the opposite trend in this city: crimes with female victims have lower odds of resolution.
+
+
+## Problem 2
+
+```{r weather_data import}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2022-01-01",
+    date_max = "2022-12-31") |>
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) |>
+  select(name, id, everything())
+```
+
+
+```{r bootstrap}
+bootstrap_results <-
+  weather_df |> 
+  modelr::bootstrap(n = 5000) |> 
+  mutate(
+    models = map(strap, \(df) lm(tmax ~ tmin + prcp, data = df)),
+    summary = map(models, broom::glance),
+    results = map(models, broom::tidy)) |> 
+  select(-models) |> 
+  unnest(summary, results) |> 
+  select(id = .id, r.squared, term, estimate) |> 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate) |> 
+  mutate(
+    log_b1b2 = log(tmin * prcp)
+  ) |> 
+  select(id, r.squared, log_b1b2)
+```
+
+
+```{r conf for r2}
+bootstrap_results |> 
+  ggplot(aes(x = r.squared)) + geom_density() + 
+  labs(title = "Distribution of estimated r square")
+
+LB_r = bootstrap_results |> pull(r.squared) |>  quantile(0.025)
+UB_r =bootstrap_results |> pull(r.squared) |>  quantile(0.975)
+
+c(LB_r, UB_r)|> 
+  knitr::kable(digits = 3)
+```
+
+Comments: The distribution of $\hat{r^2}$ shows a mild skewness towards the left, spanning between 0.86 and 0.96, with its most frequent value approximately at 0.92. The lower and upper bounds of its 95% confidence interval, marked by the 2.5% and 97.5% quantiles, are `r LB_r |> round(3)` and `r UB_r |> round(3)`, respectively. This interval can be denoted as (`r LB_r |> round(3)`, `r UB_r |> round(3)`).
+
+
+```{r conf for logb1b2}
+bootstrap_results |> 
+  filter(log_b1b2 != "NaN") |> 
+  ggplot(aes(x = log_b1b2)) + geom_density() +
+  labs(title = "Distribution of estimated log(beta1 * beta2)")
+
+LB_b = bootstrap_results |> filter(log_b1b2 != "NaN") |> pull(log_b1b2) |>  quantile(0.025)
+UB_b =bootstrap_results |> filter(log_b1b2 != "NaN") |> pull(log_b1b2) |>  quantile(0.975)
+
+c(LB_b, UB_b)|> 
+  knitr::kable(digits = 3)
+```
+
+
+The distribution of $log(\hat{\beta_1} * \hat{\beta_2})$ exhibits a pronounced left-skew, stretching from -12 to -4, and predominantly centers around -5.5. The distribution's 2.5% and 97.5% quantiles are `r LB_b |> round(3)` and `r UB_b |> round(3)`, respectively, defining a 95% confidence interval represented as (`r LB_b |> round(3)`, `r UB_b |> round(3)`).
+
+
+
+
 
 
 
